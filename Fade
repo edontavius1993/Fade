@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>AR Punch-Out Gesture & Mobile Optimized</title>
+  <style>
+    :root {
+      --accent: #ff4d4d;
+      --panel: rgba(0,0,0,0.45);
+      --bg: #0f1115;
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--bg);
+      font-family: Inter, sans-serif;
+      color: white;
+      overflow: hidden;
+    }
+    #app {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+    .stage {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+    video#cam {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+    canvas#overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      padding: 8px 12px;
+      background: var(--panel);
+      border-radius: 10px;
+      font-size: 14px;
+      z-index: 10;
+    }
+    .hud {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      padding: 8px 12px;
+      background: var(--panel);
+      border-radius: 10px;
+      font-size: 14px;
+      z-index: 10;
+    }
+    button {
+      background: var(--accent);
+      border: none;
+      color: white;
+      padding: 8px 10px;
+      margin-right: 5px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    select {
+      font-size: 14px;
+      padding: 6px;
+      border-radius: 6px;
+      margin-left: 5px;
+    }
+    #message {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #ffd;
+      background: rgba(0,0,0,0.6);
+      padding: 12px 18px;
+      border-radius: 12px;
+      z-index: 10;
+      text-align: center;
+    }
+    .center-note {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: rgba(255,255,255,0.9);
+      background: rgba(0,0,0,0.5);
+      padding: 12px 18px;
+      border-radius: 12px;
+      z-index: 10;
+      display: none;
+    }
+    .meter {
+      width: 120px;
+      height: 8px;
+      background: #222;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-left: 8px;
+    }
+    .meter > div {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), #ffbf00);
+      width: 100%;
+    }
+    /* Hit cursor */
+    .cursor {
+      position: absolute;
+      width: 40px;
+      height: 40px;
+      background: rgba(255, 200, 50, 0.8);
+      border-radius: 50%;
+      border: 2px solid #fff;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      display: none;
+      z-index: 9;
+    }
+  </style>
+
+  <!-- Include MediaPipe Gesture Recognizer and supporting libs -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.4/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.4/drawing_utils.js"></script>
+</head>
+<body>
+  <div id="app">
+    <div class="stage" id="stage">
+      <video id="cam" autoplay playsinline></video>
+      <canvas id="overlay"></canvas>
+      <div id="message">Tap “Start” to allow camera & start. Use gestures like Closed Fist to punch.</div>
+
+      <div class="ui" id="infoPanel">
+        <button id="startBtn">Start</button>
+        <button id="pauseBtn" disabled>Pause</button>
+        <select id="difficulty">
+          <option value="0">Easy</option>
+          <option value="1" selected>Normal</option>
+          <option value="2">Hard</option>
+        </select>
+        <span style="margin-left:12px">Round: <span id="round">1</span></span>
+        <span style="margin-left:8px">Score: <span id="score">0</span></span>
+      </div>
+
+      <div class="hud" id="hudRight">
+        <span>Enemy HP:</span>
+        <div class="meter"><div id="hpBar" style="width:100%"></div></div>
+        <br>
+        <span>Combo: <span id="combo">0</span></span><br>
+        <span>Stamina: <span id="stamVal">100</span>%</span>
+      </div>
+
+      <div class="center-note" id="centerNote">Paused</div>
+
+      <div class="cursor" id="hitCursor"></div>
+
+    </div>
+  </div>
+
+  <script>
+  (async () => {
+    const video = document.getElementById('cam');
+    const canvas = document.getElementById('overlay');
+    const ctx = canvas.getContext('2d', { alpha: true });
+    const startBtn = document.getElementById('startBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const difficultyEl = document.getElementById('difficulty');
+    const hpBar = document.getElementById('hpBar');
+    const scoreEl = document.getElementById('score');
+    const roundEl = document.getElementById('round');
+    const comboEl = document.getElementById('combo');
+    const stamVal = document.getElementById('stamVal');
+    const message = document.getElementById('message');
+    const centerNote = document.getElementById('centerNote');
+    const hitCursor = document.getElementById('hitCursor');
+
+    let width, height;
+
+    function resizeCanvas() {
+      const rect = video.getBoundingClientRect();
+      width = rect.width;
+      height = rect.height;
+      canvas.width = width;
+      canvas.height = height;
+    }
+
+    window.addEventListener('resize', resizeCanvas);
+
+    // Setup camera
+    async function setupCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'environment',
+            width: { ideal: 640 },  // lower resolution for mobile
+            height: { ideal: 480 },
+          },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        message.style.display = 'none';
+        resizeCanvas();
+      } catch (err) {
+        console.warn('Camera error:', err);
+        message.innerText = 'Camera unavailable—use tap/click fallback.';
+      }
+    }
+    await setupCamera();
+
+    // Game state
+    let running = false;
+    let paused = false;
+    let score = 0, round = 1, combo = 0;
+    let stamina = 100;
+    const difficulties = [
+      { hp: 60, regen: 0.0, speed: 0.9 },
+      { hp: 80, regen: 0.01, speed: 1.0 },
+      { hp: 110, regen: 0.02, speed: 1.2 }
+    ];
+    let enemy = {
+      x: 0, y: 0,
+      size: 100,
+      hp: 100, maxHp: 100,
+      vx: 0, vy: 0,
+      invuln: 0, deathTimer: 0, wobble: 0, anim: 0
+    };
+
+    function spawnEnemy() {
+      const diff = difficulties[+difficultyEl.value];
+      enemy.size = Math.min(width, height) * (0.20 + Math.random() * 0.14);
+      enemy.x = width * (0.25 + Math.random() * 0.5);
+      enemy.y = height * (0.22 + Math.random() * 0.26);
+      enemy.maxHp = Math.round(diff.hp + (round - 1) * 10);
+      enemy.hp = enemy.maxHp;
+      enemy.vx = 0; enemy.vy = 0; enemy.invuln = 0; enemy.deathTimer = 0; enemy.wobble = 0; enemy.anim = 0;
+      roundEl.innerText = round;
+      updateHud();
+    }
+
+    function updateHud() {
+      scoreEl.innerText = score;
+      comboEl.innerText = Math.floor(combo);
+      stamVal.innerText = Math.max(0, Math.round(stamina));
+      const pct = Math.max(0, Math.min(1, enemy.hp / enemy.maxHp));
+      hpBar.style.width = (pct * 100) + '%';
+    }
+
+    function drawEnemy(e) {
+      const s = e.size, x = e.x, y = e.y;
+      ctx.save();
+      ctx.translate(x, y);
+      const wob = Math.sin(e.wobble) * (s * 0.02);
+      ctx.rotate(Math.sin(e.anim * 0.05) * 0.06);
+      ctx.translate(0, wob);
+
+      // head
+      ctx.beginPath();
+      ctx.ellipse(0, 0, s * 0.48, s * 0.58, 0, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffdead'; ctx.fill();
+
+      // simpler details for mobile: fewer blush, lighter strokes
+      ctx.fillStyle = '#222';
+      ctx.beginPath(); ctx.ellipse(-s * 0.14, -s * 0.05, s * 0.06, s * 0.08, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(s * 0.14, -s * 0.05, s * 0.06, s * 0.08, 0, 0, Math.PI * 2); ctx.fill();
+
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(-s * 0.12, -s * 0.06, s * 0.02, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(s * 0.16, -s * 0.06, s * 0.02, 0, Math.PI * 2); ctx.fill();
+
+      // mouth
+      const hpRatio = Math.max(0, Math.min(1, e.hp / e.maxHp));
+      ctx.fillStyle = hpRatio > 0.33 ? '#b22222' : '#8b0000';
+      const mouthW = s * 0.26;
+      const mouthH = s * 0.12 * (1 + (1 - hpRatio) * 0.6);
+      ctx.beginPath();
+      ctx.ellipse(0, s * 0.18, mouthW, mouthH, 0, 0, Math.PI);
+      ctx.fill();
+
+      // HP bar above head
+      const barW = s * 0.6;
+      const barH = s * 0.06;
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.fillRect(-barW / 2, -s * 0.78, barW, barH);
+      ctx.fillStyle = '#ff5555';
+      ctx.fillRect(-barW / 2, -s * 0.78, barW * (e.hp / e.maxHp), barH);
+      ctx.restore();
+    }
+
+    function spawnHit(x, y, force) {
+      // small simple hit particles
+      for (let i = 0; i < 8; i++) {
+        particles.push({
+          x: x + (Math.random() - 0.5) * 20,
+          y: y + (Math.random() - 0.5) * 20,
+          vx: (Math.random() - 0.5) * force * 5,
+          vy: (Math.random() - 0.5) * force * 5,
+          life: 20 + Math.random() * 10,
+          size: 2 + Math.random() * 6,
+          color: `hsl(${20 + Math.random() * 20}, 80%, ${40 + Math.random() * 20}%)`
+        });
+      }
+    }
+
+    let particles = [];
+
+    function startDeathAnim() {
+      enemy.deathTimer = 30;
+      enemy.invuln = 9999;
+      enemy.vx = (Math.random() - 0.5) * 15;
+      enemy.vy = -10;
+    }
+
+    function feedback() {
+      if (navigator.vibrate) navigator.vibrate(20);
+      // short audio click / punch
+      try {
+        const ac = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ac.createOscillator();
+        const g = ac.createGain();
+        o.type = "sawtooth";
+        o.frequency.value = 240;
+        g.gain.value = 0.002;
+        o.connect(g); g.connect(ac.destination);
+        o.start();
+        setTimeout(() => { o.stop(); ac.close(); }, 50);
+      } catch (e) {}
+    }
+
+    // Gesture Recognizer setup
+    const { GestureRecognizer, FilesetResolver, VisionRunningMode } = window.tasksVision;
+
+    const vision = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+    );
+
+    const gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: "https://storage.googleapis.com/mediapipe-tasks/gesture_recognizer/gesture_recognizer.task"
+      },
+      runningMode: "VIDEO",
+      numHands: 1,
+      minHandDetectionConfidence: 0.6,
+      minHandPresenceConfidence: 0.6,
+      minTrackingConfidence: 0.5,
+      gestureClassifierOptions: {
+        maxResults: 1,
+        scoreThreshold: 0.7,
+        // allowlist only some gestures we care about:
+        categoryAllowlist: ["Closed_Fist","Open_Palm","Pointing_Up"]
+      }
+    });
+
+    // For fallback: also include Hands landmark + simple detection if needed
+    const hands = new window.Hands({
+      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`
+    });
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 0,  // lowest complexity for speed on mobile
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.5
+    });
+
+    // For throttling
+    let lastGestureFrame = 0;
+    let frameCount = 0;
+
+    function tryGestureHit(gesture, landmarks) {
+      if (!running || paused) return;
+      // If gesture is Closed_Fist → strong punch
+      // If gesture is Open_Palm → maybe weak punch or block (ignore)
+      // If gesture is Pointing_Up → maybe jab
+      // Only act when gesture changes or enough time passed
+      const e = enemy;
+      const diff = difficulties[+difficultyEl.value];
+
+      const palmLandmark = landmarks[0]; // wrist or palm center approximate
+      // but better: use e.g. index finger tip (landmark 8)
+      const tip = landmarks[8];
+      if (!tip) return;
+
+      const cx = width * (1 - tip.x);
+      const cy = height * tip.y;
+      // show hit cursor
+      hitCursor.style.left = cx + 'px';
+      hitCursor.style.top = cy + 'px';
+      hitCursor.style.display = 'block';
+
+      const dist = Math.hypot(cx - e.x, cy - e.y);
+      if (dist < e.size * 0.5 && e.invuln <= 0) {
+        // Only respond to certain gestures
+        let power = 1.5;
+        if (gesture === "Closed_Fist") power = 2.5;
+        else if (gesture === "Pointing_Up") power = 1.8;
+        else if (gesture === "Open_Palm") return; // no punch
+
+        // throttle hits
+        if (frameCount - lastGestureFrame > 12) {
+          lastGestureFrame = frameCount;
+          onHit(power, cx, cy);
+          feedback();
+          // reduce stamina
+          stamina = Math.max(0, stamina - (5 + power * 5));
+        }
+      }
+    }
+
+    // Fallback hit via taps / space
+    canvas.addEventListener('click', ev => {
+      const rect = canvas.getBoundingClientRect();
+      const cx = ev.clientX - rect.left;
+      const cy = ev.clientY - rect.top;
+      const dist = Math.hypot(cx - enemy.x, cy - enemy.y);
+      if (!running) {
+        spawnEnemy();
+      } else if (dist < enemy.size * 0.5) {
+        onHit(1.2, cx, cy);
+        feedback();
+      } else {
+        enemy.x = cx;
+        enemy.y = cy;
+      }
+    });
+    window.addEventListener('keydown', e => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (!running) startGame();
+        else {
+          onHit(1.0, enemy.x, enemy.y);
+          feedback();
+        }
+      }
+    });
+
+    startBtn.addEventListener('click', () => {
+      if (!running) {
+        startGame();
+        pauseBtn.disabled = false;
+      } else {
+        resetGame();
+        startGame();
+      }
+    });
+    pauseBtn.addEventListener('click', () => {
+      paused = !paused;
+      centerNote.style.display = paused ? 'block' : 'none';
+      pauseBtn.innerText = paused ? 'Resume' : 'Pause';
+    });
+    difficultyEl.addEventListener('change', () => spawnEnemy());
+
+    function onHit(power, x, y) {
+      const e = enemy;
+      if (e.invuln > 0) return false;
+      const damage = Math.max(5, Math.round(power * (3 + Math.random() * 4)));
+      e.hp -= damage;
+      e.invuln = 12;
+      e.wobble += Math.min(2.5, power * 2);
+      combo += 1;
+      score += damage * (1 + Math.floor(combo / 3));
+      spawnHit(x, y, power);
+
+      const dir = (x < e.x ? -1 : 1);
+      e.vx += dir * Math.min(12, power * 8);
+      e.vy -= Math.min(10, power * 6);
+
+      updateHud();
+
+      if (e.hp <= 0) {
+        score += 40 + round * 8;
+        combo = 0;
+        round++;
+        startDeathAnim();
+      }
+      return true;
+    }
+
+    function gameLoop(ts) {
+      frameCount++;
+      if (running && !paused) {
+        // update enemy
+        const diff = difficulties[+difficultyEl.value];
+        enemy.anim += 1;
+        enemy.wobble *= 0.9;
+        enemy.x += enemy.vx * 0.1 * diff.speed;
+        enemy.y += enemy.vy * 0.1 * diff.speed;
+        enemy.vx *= 0.9;
+        enemy.vy *= 0.9;
+        enemy.x = Math.max(enemy.size * 0.35, Math.min(width - enemy.size * 0.35, enemy.x));
+        enemy.y = Math.max(enemy.size * 0.28, Math.min(height - enemy.size * 0.28, enemy.y));
+        enemy.hp = Math.min(enemy.maxHp, enemy.hp + diff.regen);
+
+        if (enemy.deathTimer > 0) {
+          enemy.deathTimer--;
+          enemy.x += enemy.vx * 0.6;
+          enemy.y += enemy.vy * 0.6;
+          enemy.vy += 0.8;
+          enemy.wobble += 0.5;
+          if (enemy.deathTimer === 0) spawnEnemy();
+        }
+
+        if (enemy.invuln > 0) enemy.invuln = Math.max(0, enemy.invuln - 1);
+
+        // update particles
+        for (let i = particles.length - 1; i >= 0; i--) {
+          const p = particles[i];
+          p.x += p.vx * 0.6;
+          p.y += p.vy * 0.6;
+          p.vy += 0.4;
+          p.life--;
+          if (p.life <= 0) particles.splice(i, 1);
+        }
+
+        updateHud();
+      }
+
+      // draw
+      ctx.clearRect(0,0,canvas.width, canvas.height);
+      ctx.fillStyle = 'rgba(0,0,0,0.05)';
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+      drawEnemy(enemy);
+
+      for (const p of particles) {
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, Math.max(1, p.size * (p.life / 50)), 0, Math.PI*2);
+        ctx.fill();
+      }
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    function startGame() {
+      running = true; paused = false;
+      startBtn.textContent = 'Restart';
+      pauseBtn.disabled = false;
+      centerNote.style.display = 'none';
+      score = 0; round = 1; combo = 0; stamina = 100;
+      enemy.invuln = 0; enemy.deathTimer = 0;
+      spawnEnemy();
+      updateHud();
+      requestAnimationFrame(gameLoop);
+    }
+
+    function resetGame() {
+      running = false; paused = false;
+      startBtn.textContent = 'Start';
+      pauseBtn.disabled = true;
+      centerNote.style.display = 'none';
+      score = 0; round = 1; combo = 0; stamina = 100;
+      updateHud();
+    }
+
+    // Hook up GestureRecognizer
+    gestureRecognizer.recognizeForVideo(video, 0, /* imageProcessingOptions: */ {}).then(result => {
+      // initial trigger
+    });
+
+    video.addEventListener('play', () => {
+      // loop to get gesture results
+      async function gestureLoop() {
+        if (!video.paused && !video.ended) {
+          // Only every N frames to reduce load
+          if (frameCount % 2 === 0) {
+            const result = await gestureRecognizer.recognizeForVideo(video, performance.now(), {});
+            if (result.gestures && result.gestures.length > 0) {
+              const g = result.gestures[0];
+              const gestureName = g.categoryName;
+              const landmarks = result.handLandmarks && result.handLandmarks.length > 0
+                                ? result.handLandmarks[0]
+                                : null;
+              if (landmarks) {
+                tryGestureHit(gestureName, landmarks);
+              }
+            }
+          }
+          // fallback: we can still run landmark-only for visualization or fallback hits etc
+          // optionally draw landmarks for debug:
+          /*
+          ctx.save();
+          if (hands) {
+            await hands.send({image: video});
+            if (hands.results && hands.results.multiHandLandmarks) {
+              for (const lm of hands.results.multiHandLandmarks) {
+                window.drawConnectors(ctx, lm, window.HAND_CONNECTIONS, {color:'rgba(255,255,255,0.4)', lineWidth:1});
+                window.drawLandmarks(ctx, lm, {color:'rgba(0,255,0,0.8)', lineWidth:2});
+              }
+            }
+          }
+          ctx.restore();
+          */
+          // hide cursor if no landmark / gesture
+          //hitCursor.style.display = 'none';
+
+          requestAnimationFrame(gestureLoop);
+        }
+      }
+      gestureLoop();
+    });
+
+    // Initial spawn/hud
+    spawnEnemy();
+    updateHud();
+
+  })();
+  </script>
+</body>
+</html>
